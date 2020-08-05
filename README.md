@@ -5,6 +5,8 @@ ucore os labs was used as OS Experiments in OS Course Of Dept. of Computer Scien
 - [ucore os lab docs](https://chyyuu.gitbooks.io/ucore_os_docs/content/)
 - [rcore os lab docs](https://rcore-os.github.io/rCore-Tutorial-deploy/)
 
+- [docs](https://chyyuu.gitbooks.io/ucore_os_docs/content/lab1/lab1_2_1_exercise.html)
+
 NEWS
 ====
 - 2020.07.01: [Rust-based OS Tutorial Summer of Code 2020](https://github.com/rcore-os/rCore/wiki/os-tutorial-summer-of-code)
