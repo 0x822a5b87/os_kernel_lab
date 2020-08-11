@@ -219,4 +219,169 @@ asm [volatile] ( Assembler Template
 
 ## 使用 qemu 模拟
 
+```bash
+# 在gdb命令行界面下，使用下面的命令连接到qemu
+target remote 127.0.0.1:1234
+# 为了让gdb获知符号信息，需要指定调试目标文件，gdb中使用file命令：
+file ./bin/kernel
+```
+
+## 加载调试目标
+
+在进行gdb本地应用程序调试的时候，因为在指定了执行文件时就已经加载了文件中包含的调试信息，因此不用再使用gdb命令专门加载了。
+
+但是在使用qemu进行远程调试的时候，我们必须手动加载符号表，也就是在gdb中用file命令。
+
+这样加载调试信息都是按照elf文件中制定的虚拟地址进行加载的，这在静态连接的代码中没有任何问题。但是在调试含有动态链接库的代码时，动态链接库的ELF执行文件头中指定的加载虚拟地址都是0，这个地址实际上是不正确的。从操作系统角度来看，用户态的动态链接库的加载地址都是由操作系统动态分配的，没有一个固定值。然后操作系统再把动态链接库加载到这个地址，并由用户态的库链接器（linker）把动态链接库中的地址信息重新设置，自此动态链接库才可正常运行。
+
+```gdb
+(gdb) add-symbol-file android_test/system/bin/linker 0x6fee6180
+```
+
+## 了解处理器硬件
+
+### Intel 80386运行模式
+
+80386处理器有四种运行模式：实模式、保护模式、SMM模式和虚拟8086模式。这里对涉及ucore的实模式、保护模式做一个简要介绍。
+
+`实模式`：这是个人计算机早期的8086处理器采用的一种简单运行模式，当时微软的MS-DOS操作系统主要就是运行在8086的实模式下。80386加电启动后处于实模式运行状态，在这种状态下软件可访问的物理内存空间不能超过1MB，且无法发挥Intel 80386以上级别的32位CPU的4GB内存管理能力。
+
+**实模式将整个物理内存看成分段的区域，程序代码和数据位于不同区域，操作系统和用户程序并没有区别对待，而且每一个指针都是指向实际的物理地址。这样用户程序的一个指针如果指向了操作系统区域或其他用户程序区域，并修改了内容，那么其后果就很可能是灾难性的。**
+
+`保护模式`： **保护模式的一个主要目标是确保应用程序无法对操作系统进行破坏**，
+
+实际上，80386就是通过在实模式下初始化控制寄存器（如GDTR，LDTR，IDTR与TR等管理寄存器）以及页表，然后再通过设置CR0寄存器使其中的保护模式使能位置位，从而进入到80386的保护模式。
+
+当80386工作在保护模式下的时候，其所有的32根地址线都可供寻址，物理寻址空间高达4GB。在保护模式下，支持内存分页机制，提供了对虚拟内存的良好支持。保护模式下80386支持多任务，还支持优先级机制，不同的程序可以运行在不同的特权级上。特权级一共分0～3四个级别，操作系统运行在最高的特权级0上，应用程序则运行在比较低的级别上；配合良好的检查机制后，既可以在任务间实现数据的安全共享也可以很好地隔离各个任务。
+
+### Intel 80386内存架构
+
+一般而言，内存地址有两个：一个是CPU通过总线访问物理内存用到的物理地址，一个是我们编写的应用程序所用到的逻辑地址（也有人称为虚拟地址）
+
+```c
+int boo=1;
+int *foo=&foo;
+```
+
+物理内存地址空间是处理器提交到总线上用于访问计算机系统中的内存和外设的最终地址。一个计算机系统中只有一个物理地址空间。
+
+线性地址空间是80386处理器通过段（Segment）机制控制下的形成的地址空间。在操作系统的管理下，**每个运行的应用程序有相对独立的一个或多个内存空间段**，每个段有各自的起始地址和长度属性，大小不固定，这样可让多个运行的应用程序之间相互隔离，实现对地址空间的保护。
+
+80386处理器的段管理功能单元负责把虚拟地址转换成线性地址，在没有下面介绍的页机制启动的情况下，这个线性地址就是物理地址
+
+相对而言，**段机制对大量应用程序分散地使用大内存的支持能力较弱**。所以Intel公司又加入了页机制，每个页的大小是固定的（一般为4KB），也可完成对内存单元的安全保护，隔离，且可有效支持大量应用程序分散地使用大内存的情况。
+
+>分段机制和分页机制都启动：逻辑地址---> **段机制处理** --->线性地址---> **页机制处理** --->物理地址
+
+### 内存地址总结
+
+操作系统会为每个进程分配一个独立的虚拟内存片，每个虚拟内存的地址都是从 `[0, max_memory]` 区间的一个值。
+
+当我们程序去访问一个虚拟内粗地址（逻辑地址）的时候，首先会经过段处理机制将虚拟地址转换为一个线性地;
+
+由于页的存在，每个线性地址会被分为很多页，而在实际运行过程中，内存的页有可能是在实际的内存中，有可能在硬盘上，这些都需要去进行计算才能得到最后的物理地址。
+
+### Intel 80386寄存器
+
+80386的寄存器可以分为8组：通用寄存器，段寄存器，指令指针寄存器，标志寄存器，系统地址寄存器，控制寄存器，调试寄存器，测试寄存器，它们的宽度都是32位。
+
+**一般程序员看到的寄存器包括通用寄存器，段寄存器，指令指针寄存器，标志寄存器。**
+
+## 了解ucore编程方法和通用数据结构
+
+uCore的面向对象编程方法，目前主要是采用了类似C++的接口（interface）概念，即是让实现细节不同的某类内核子系统（比如物理内存分配器、调度器，文件系统等）有共同的操作方式，这样虽然内存子系统的实现千差万别，但它的访问接口是不变的。这样不同的内核子系统之间就可以灵活组合在一起，实现风格各异，功能不同的操作系统。
+
+**接口在 C 语言中，表现为一组函数指针的集合。放在 C++ 中，即为虚表。**
+
+接口设计的难点是如果找出各种内核子系统的共性访问/操作模式，从而可以根据访问模式提取出函数指针列表。
+
+比如对于uCore内核中的物理内存管理子系统， **首先通过分析内核中其他子系统可能对物理内存管理子系统** ，明确物理内存管理子系统的访问/操作模式，然后我们定义了pmm_manager数据结构（位于lab2/kern/mm/pmm.h）如下： 
+
+```c
+// pmm_manager is a physical memory management class. A special pmm manager - XXX_pmm_manager
+// only needs to implement the methods in pmm_manager class, then XXX_pmm_manager can be used
+// by ucore to manage the total physical memory space.
+struct pmm_manager {
+    // XXX_pmm_manager's name
+    const char *name;  
+    // initialize internal description&management data structure
+    // (free block list, number of free block) of XXX_pmm_manager 
+    void (*init)(void); 
+    // setup description&management data structcure according to
+    // the initial free physical memory space 
+    void (*init_memmap)(struct Page *base, size_t n); 
+    // allocate >=n pages, depend on the allocation algorithm 
+    struct Page *(*alloc_pages)(size_t n);  
+    // free >=n pages with "base" addr of Page descriptor structures(memlayout.h)
+    void (*free_pages)(struct Page *base, size_t n);   
+    // return the number of free pages 
+    size_t (*nr_free_pages)(void);                     
+    // check the correctness of XXX_pmm_manager
+    void (*check)(void);                               
+};
+```
+
+这样基于此数据结构，我们可以实现不同连续内存分配算法的物理内存管理子系统，而这些物理内存管理子系统需要编写算法，把算法实现在此结构中定义的init（初始化）、init_memmap（分析空闲物理内存并初始化管理）、alloc_pages（分配物理页）、free_pages（释放物理页）函数指针所对应的函数中。而其他内存子系统需要与物理内存管理子系统交互时，只需调用特定物理内存管理子系统所采用的pmm_manager数据结构变量中的函数指针即可
+
+## 通用数据结构
+
+### 双向循环链表
+
+```c
+// 常用的数据结构
+typedef struct foo {
+    ElemType data;
+	struct foo *prev;
+	struct foo *next;		
+} foo_t;
+```
+
+这种双向循环链表数据结构的一个潜在问题是，虽然链表的基本操作是一致的，但由于每种特定数据结构的类型不一致，需要为每种特定数据结构类型定义针对这个数据结构的特定链表插入、删除等各种操作，会导致代码冗余。
+
+```c
+// 假设有如下结构题
+typedef struct bar {
+    ElemType2 data;
+	struct foo *prev;
+	struct foo *next;		
+} bar_t;
+
+// 就必须定义两个不同的 insert 方法
+void insert(foo *f ElemType data);
+void insert(foo *f ElemType2 data);
+```
+
+uCore的双向链表结构定义为：
+
+```c
+struct list_entry
+{
+	struct list_entry *prev, next;
+};
+```
+
+**需要注意uCore内核的链表节点list_entry没有包含传统的data数据域，，而是在具体的数据结构中包含链表节点。**
+
+```c
+/* free_area_t - maintains a doubly linked list to record free (unused) pages */
+typedef struct {
+    list_entry_t free_list;         // the list header
+    unsigned int nr_free;           // # of free pages in this free list
+} free_area_t;
+```
+
+而每一个空闲块链表节点定义（位于lab2/kern/mm/memlayout）为：
+
+```c
+/* *
+ * struct Page - Page descriptor structures. Each Page describes one
+ * physical page. In kern/mm/pmm.h, you can find lots of useful functions
+ * that convert Page to other data types, such as phyical address.
+ * */
+struct Page {
+    atomic_t ref;          // page frame's reference counter
+    ……
+    list_entry_t page_link;         // free list link
+};
+```
 
