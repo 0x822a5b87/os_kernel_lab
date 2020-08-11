@@ -385,3 +385,83 @@ struct Page {
 };
 ```
 
+### 双线链表使用的宏
+
+```c
+// 在 c 语言没有模板的情况下通用的双向链表
+
+#include "iostream"
+
+// convert list entry to page
+#define le2page(le, member) to_struct((le), struct page, member)
+
+// Return the offset of 'member' relative to the beginning of a struct type
+#define offset_of(type, member) \
+((size_t)(&((type *)0)->member))
+
+/**
+ * to_struct - get a struct from a ptr
+ *
+ * @ptr: a struct pointer of member
+ * @type: the type of the struct this is embedded in
+ * @member: the name of the member within the struct
+ */
+#define to_struct(ptr, type, member) \
+((type *)((char *)(ptr) - offset_of(type, member)))
+
+struct list_entry
+{
+	list_entry *next, *prev;
+};
+
+struct page
+{
+	int        value;
+	list_entry page_link;
+};
+
+int main(int argc, char **argv)
+{
+	page p{1024, nullptr};
+	std::cout << offset_of(page, page_link) << std::endl;
+	// 8
+	page *pt = to_struct(&p.page_link, page, page_link);
+	std::cout << pt->value << std::endl;
+	// 1024
+}
+```
+
+### offset_of
+
+```c
+// Return the offset of 'member' relative to the beginning of a struct type
+#define offset_of(type, member) \
+((size_t)(&((type *)0)->member))
+```
+
+这个宏很简单，就是将0转换为一个 `type` 类型的指针，然后对得到的指针取 member 变量，那么就得到了 member 变量的相对于 0 的地址，也就是这个在整个 struct 中的偏移量。
+
+### to_struct
+
+```c
+#define to_struct(ptr, type, member) \
+((type *)((char *)(ptr) - offset_of(type, member)))
+```
+
+这个宏的参数是一个指针，这个指针指向了结构体中的某一个元素，type 则表示这个结构体的类型，member 则表示这个指针指向的元素的成员变量名。
+
+首先使用 type 和 member 求出成员在结构体中的偏移量。将指向结构体中元素的指针减去这个偏移量就得到 `结构体的指针地址`，再将这个指针地址转换为 `(type *)` 就得到了我们想要的元素的指针。
+
+要注意的地方是，在修改指针的值的时候，必须先将指针转换为 `(char *)`，否则实际得到的结果应该是 - sizeof(type) * offset_of(type, member) 的结果
+
+### 其他
+
+修改宏到如下也可以得到正确的结果：
+
+```c
+#define offset_of(type, member) \
+((size_t)(&((type *)100)->member))
+
+#define to_struct(ptr, type, member) \
+((type *)((char *)(ptr) - (offset_of(type, member) - 100)))
+```
